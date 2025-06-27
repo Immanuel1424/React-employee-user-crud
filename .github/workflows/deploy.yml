@@ -9,51 +9,66 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: 📥 Checkout code
         uses: actions/checkout@v3
 
-      - name: Setup SSH key
+      - name: 🔐 Setup SSH agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.SSH_KEY }}
 
-      - name: Add public instance to known_hosts
+      - name: 📌 Add EC2 IP to known_hosts
         run: ssh-keyscan -H ${{ secrets.PUBLIC_INSTANCE_IP }} >> ~/.ssh/known_hosts
 
-      - name: Test SSH connection to public instance
+      - name: 🧪 Test SSH access to EC2
         run: ssh -o StrictHostKeyChecking=yes ubuntu@${{ secrets.PUBLIC_INSTANCE_IP }} "echo '✅ Public instance connected!'"
 
-      - name: Build and package fullstack app
+      - name: 📦 Build and archive code
         run: |
           mkdir -p /tmp/fullstack-build
           tar --exclude='.git' --exclude='fullstack.tar.gz' -czf /tmp/fullstack-build/fullstack.tar.gz .
           cp /tmp/fullstack-build/fullstack.tar.gz .
 
-      - name: Copy app archive to public instance
-        run: |
-          scp fullstack.tar.gz ubuntu@${{ secrets.PUBLIC_INSTANCE_IP }}:/tmp/
+      - name: 🚚 Copy code to EC2 instance
+        run: scp fullstack.tar.gz ubuntu@${{ secrets.PUBLIC_INSTANCE_IP }}:/tmp/
 
-      - name: Deploy on public instance
+      - name: 🚀 Deploy on EC2
         run: |
           ssh ubuntu@${{ secrets.PUBLIC_INSTANCE_IP }} 'bash -s' <<'EOF'
-            echo "🚀 Starting deployment at $(date -u)"
+            set -e
+            echo "🚀 Deployment started at $(date -u)"
 
-            # Cleanup and prepare
+            # === Cleanup and Setup ===
             sudo rm -rf /opt/user /opt/employee
-            sudo chown ubuntu:ubuntu /opt
-            cd /opt
+            sudo mkdir -p /opt/user /opt/employee
+            sudo chown -R ubuntu:ubuntu /opt
 
-            # Extract
+            # === Extract Code ===
+            cd /opt
             cp /tmp/fullstack.tar.gz .
             tar xzf fullstack.tar.gz
 
-            # Start user app
-            cd /opt/user
-            pm2 start ecosystem.user.config.js
+            # === Install PM2 if not already ===
+            if ! command -v pm2 &> /dev/null; then
+              echo "📦 Installing PM2..."
+              sudo npm install -g pm2
+            fi
 
-            # Start employee app
-            cd /opt/employee
-            pm2 start ecosystem.employee.config.js
+            # === Set Ownership ===
+            sudo chown -R user:user /opt/user
+            sudo chown -R employee:employee /opt/employee
 
-            echo "✅ Deployment completed at $(date -u)"
+            # === Start User App ===
+            sudo -u user pm2 start /opt/user/ecosystem.user.config.js
+            sudo -u user pm2 save
+
+            # === Start Employee App ===
+            sudo -u employee pm2 start /opt/employee/ecosystem.employee.config.js
+            sudo -u employee pm2 save
+
+            # === Enable PM2 Startup ===
+            sudo pm2 startup systemd -u user --hp /home/user
+            sudo pm2 startup systemd -u employee --hp /home/employee
+
+            echo "✅ Deployment finished at $(date -u)"
           EOF
