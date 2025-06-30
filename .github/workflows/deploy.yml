@@ -12,40 +12,46 @@ jobs:
       - name: 📥 Checkout code
         uses: actions/checkout@v3
 
-      - name: 🔐 Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: 📦 Package Code into tar.gz
+      - name: 📦 Build and archive code
         run: |
           mkdir -p /tmp/fullstack-build
-          tar --exclude='.git' --exclude='fullstack.tar.gz' -czf /tmp/fullstack-build/fullstack.tar.gz .
-          base64 /tmp/fullstack-build/fullstack.tar.gz > fullstack_base64.txt
+          tar --exclude='.git' -czf /tmp/fullstack-build/fullstack.tar.gz .
+          cp /tmp/fullstack-build/fullstack.tar.gz .
 
-      - name: 🚀 Send SSM Deployment Command to EC2
+      - name: ☁️ Upload to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          aws s3 cp fullstack.tar.gz s3://${{ secrets.S3_BUCKET_NAME }}/fullstack.tar.gz --region $AWS_REGION
+
+      - name: 🚀 Deploy via SSM
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+          S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
         run: |
           aws ssm send-command \
             --document-name "AWS-RunShellScript" \
-            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
-            --region "${{ secrets.AWS_REGION }}" \
-            --comment "SSM Deployment via GitHub Actions" \
+            --comment "Deploy Fullstack App" \
+            --region "$AWS_REGION" \
+            --instance-ids "$INSTANCE_ID" \
             --parameters 'commands=[
-              "echo Starting SSM deploy",
-              "cd /tmp",
-              "echo \"${{ steps.encode.outputs.encoded }}\" | base64 -d > fullstack.tar.gz",
-              "rm -rf /opt/user /opt/employee",
-              "mkdir -p /opt/user /opt/employee",
-              "tar -xzf /tmp/fullstack.tar.gz -C /opt",
-              "npm install -g pm2 || true",
-              "chown -R user:user /opt/user",
-              "chown -R employee:employee /opt/employee",
-              "sudo -u user pm2 start /opt/user/ecosystem.user.config.js",
+              "aws s3 cp s3://'"$S3_BUCKET_NAME"'/fullstack.tar.gz /tmp/fullstack.tar.gz",
+              "sudo rm -rf /opt/user /opt/employee",
+              "sudo mkdir -p /opt/user /opt/employee",
+              "sudo tar -xzf /tmp/fullstack.tar.gz -C /opt",
+              "sudo chown -R user:user /opt/user",
+              "sudo chown -R employee:employee /opt/employee",
+              "command -v pm2 || sudo npm install -g pm2",
+              "sudo -u user pm2 start /opt/user/ecosystem.user.config.js || true",
+              "sudo -u employee pm2 start /opt/employee/ecosystem.employee.config.js || true",
               "sudo -u user pm2 save",
-              "sudo -u employee pm2 start /opt/employee/ecosystem.employee.config.js",
               "sudo -u employee pm2 save",
-              "pm2 startup systemd -u user --hp /home/user",
-              "pm2 startup systemd -u employee --hp /home/employee"
-            ]'
+              "sudo pm2 startup systemd -u user --hp /home/user",
+              "sudo pm2 startup systemd -u employee --hp /home/employee"
+            ]' \
+            --output text
