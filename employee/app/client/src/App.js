@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import "./App.css"; // Make sure styles match the structure
+import "./App.css"; // Make sure styles match the structure....
 
 const API_URL = "http://13.233.139.87:5000/api"; // Employee backend
 
