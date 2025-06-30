@@ -1,4 +1,4 @@
-name: Deploy Fullstack App
+name: Deploy Fullstack App via SSM
 
 on:
   push:
@@ -12,63 +12,40 @@ jobs:
       - name: 📥 Checkout code
         uses: actions/checkout@v3
 
-      - name: 🔐 Setup SSH agent
-        uses: webfactory/ssh-agent@v0.9.0
+      - name: 🔐 Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
         with:
-          ssh-private-key: ${{ secrets.SSH_KEY }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: 📌 Add EC2 IP to known_hosts
-        run: ssh-keyscan -H ${{ secrets.PUBLIC_INSTANCE_IP }} >> ~/.ssh/known_hosts
-
-      - name: 🧪 Test SSH access to EC2
-        run: ssh -o StrictHostKeyChecking=yes ubuntu@${{ secrets.PUBLIC_INSTANCE_IP }} "echo '✅ Public instance connected!'"
-
-      - name: 📦 Build and archive code
+      - name: 📦 Package Code into tar.gz
         run: |
           mkdir -p /tmp/fullstack-build
           tar --exclude='.git' --exclude='fullstack.tar.gz' -czf /tmp/fullstack-build/fullstack.tar.gz .
-          cp /tmp/fullstack-build/fullstack.tar.gz .
+          base64 /tmp/fullstack-build/fullstack.tar.gz > fullstack_base64.txt
 
-      - name: 🚚 Copy code to EC2 instance
-        run: scp fullstack.tar.gz ubuntu@${{ secrets.PUBLIC_INSTANCE_IP }}:/tmp/
-
-      - name: 🚀 Deploy on EC2
+      - name: 🚀 Send SSM Deployment Command to EC2
         run: |
-          ssh ubuntu@${{ secrets.PUBLIC_INSTANCE_IP }} 'bash -s' <<'EOF'
-            set -e
-            echo "🚀 Deployment started at $(date -u)"
-
-            # === Cleanup and Setup ===
-            sudo rm -rf /opt/user /opt/employee
-            sudo mkdir -p /opt/user /opt/employee
-            sudo chown -R ubuntu:ubuntu /opt
-
-            # === Extract Code ===
-            cd /opt
-            cp /tmp/fullstack.tar.gz .
-            tar xzf fullstack.tar.gz
-
-            # === Install PM2 if not already ===
-            if ! command -v pm2 &> /dev/null; then
-              echo "📦 Installing PM2..."
-              sudo npm install -g pm2
-            fi
-
-            # === Set Ownership ===
-            sudo chown -R user:user /opt/user
-            sudo chown -R employee:employee /opt/employee
-
-            # === Start User App ===
-            sudo -u user pm2 start /opt/user/ecosystem.user.config.js
-            sudo -u user pm2 save
-
-            # === Start Employee App ===
-            sudo -u employee pm2 start /opt/employee/ecosystem.employee.config.js
-            sudo -u employee pm2 save
-
-            # === Enable PM2 Startup ===
-            sudo pm2 startup systemd -u user --hp /home/user
-            sudo pm2 startup systemd -u employee --hp /home/employee
-
-            echo "✅ Deployment finished at $(date -u)"
-          EOF
+          aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --region "${{ secrets.AWS_REGION }}" \
+            --comment "SSM Deployment via GitHub Actions" \
+            --parameters 'commands=[
+              "echo Starting SSM deploy",
+              "cd /tmp",
+              "echo \"${{ steps.encode.outputs.encoded }}\" | base64 -d > fullstack.tar.gz",
+              "rm -rf /opt/user /opt/employee",
+              "mkdir -p /opt/user /opt/employee",
+              "tar -xzf /tmp/fullstack.tar.gz -C /opt",
+              "npm install -g pm2 || true",
+              "chown -R user:user /opt/user",
+              "chown -R employee:employee /opt/employee",
+              "sudo -u user pm2 start /opt/user/ecosystem.user.config.js",
+              "sudo -u user pm2 save",
+              "sudo -u employee pm2 start /opt/employee/ecosystem.employee.config.js",
+              "sudo -u employee pm2 save",
+              "pm2 startup systemd -u user --hp /home/user",
+              "pm2 startup systemd -u employee --hp /home/employee"
+            ]'
